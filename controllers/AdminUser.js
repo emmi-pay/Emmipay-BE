@@ -29,7 +29,7 @@ const logAdminActivity = async ({ userId, taskType, taskDescription }) => {
             { userId, date: currentDate },
             {
                 $setOnInsert: {
-                    userName: user.username,
+                    name: user.name,
                 },
                 $push: {
                     logs: taskEntry
@@ -41,6 +41,34 @@ const logAdminActivity = async ({ userId, taskType, taskDescription }) => {
     } catch (error) {
         console.error('Error logging admin activity:', error);
     }
+};
+
+const generateUsername = async (name) => {
+    let firstName = name
+        .trim()
+        .toLowerCase()
+        .split(/\s+/)[0]
+        .replace(/[^a-z0-9]/g, '');
+
+    if (!firstName || firstName.length < 2) {
+        firstName = 'user';
+    }
+
+    let username;
+    let attempts = 0;
+    const maxAttempts = 100;
+
+    do {
+        const randomNum = Math.floor(Math.random() * 9000) + 100;
+        username = `${firstName}_${randomNum}`;
+        attempts++;
+    } while (await AdminUser.findOne({ username }) && attempts < maxAttempts);
+
+    if (attempts >= maxAttempts) {
+        username = `${firstName}_${Date.now()}`;
+    }
+
+    return username;
 };
 
 const s3Client = new S3Client({
@@ -127,7 +155,6 @@ const AdminUserController = {
 
             const token = jwt.sign(
                 {
-                    username: admin.username,
                     id: admin._id,
                     accessAssigned: admin.accessAssigned
                 },
@@ -355,7 +382,6 @@ const AdminUserController = {
             // Generate new token
             const newToken = jwt.sign(
                 {
-                    username: admin.username,
                     id: admin._id,
                     accessAssigned: admin.accessAssigned
                 },
@@ -390,15 +416,13 @@ const AdminUserController = {
     // Admin User Management
     addUserAdmin: async (req, res) => {
         const userId = req.user.id;
-        console.log('userId:', userId)
 
         try {
-            const { username, useremail, role } = req.body;
-            console.log('req.body:', req.body)
+            const { name, useremail, role } = req.body;
 
-            if (!username || !useremail || !role) {
+            if (!name || !useremail || !role) {
                 return res.status(400).json({
-                    message: 'Username, email, and role are required'
+                    message: 'Name, email, and role are required'
                 });
             }
 
@@ -408,24 +432,25 @@ const AdminUserController = {
             }
 
             if (creatorUser.role !== 'admin') {
-                console.log('creatorUser:', creatorUser)
                 return res.status(400).json({
                     message: 'You do not have permission to add users. Only admins can perform this action.'
                 });
             }
 
-            const existingUser = await AdminUser.findOne({
-                $or: [{ username }, { useremail }]
-            });
-
-            if (existingUser) {
-                return res.status(400).json({ message: 'User with this username or email already exists' });
+            // Check if email already exists
+            const existingEmail = await AdminUser.findOne({ useremail });
+            if (existingEmail) {
+                return res.status(400).json({ message: 'User with this email already exists' });
             }
+
+            // ⭐ Auto-generate username from name
+            const username = await generateUsername(name);
 
             const newPassword = Math.random().toString(36).slice(-8);
             const hashedPassword = await bcrypt.hash(newPassword, 10);
 
             const newAdminUser = new AdminUser({
+                name: name.trim(),
                 username,
                 useremail,
                 password: hashedPassword,
@@ -437,7 +462,7 @@ const AdminUserController = {
             await logAdminActivity({
                 userId,
                 taskType: "Admin User Creation",
-                taskDescription: `An admin user account was successfully created for '${username}' (Email: ${useremail}, Role: ${role}) by '${creatorUser.username}'.`
+                taskDescription: `An admin user account was created for '${name.trim()}' (Username: ${username}, Email: ${useremail}, Role: ${role}) by '${creatorUser.name}'.`
             });
 
             const dashboardLink = `
@@ -454,88 +479,91 @@ const AdminUserController = {
                 to: useremail,
                 subject: 'Welcome to the EmmiPay Family!',
                 html: `
-                <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background-color: #f9f9f9;">
-                    <div style="background-color: #ffffff; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
-                        
-                        <div style="text-align: center; margin-bottom: 30px;">
-                            <h1 style="color: #2c3e50; font-size: 28px; margin-bottom: 10px;">Welcome to the EmmiPay Family! 🎊</h1>
-                            <div style="width: 50px; height: 3px; background-color: #3498db; margin: 0 auto;"></div>
-                        </div>
-
-                        <div style="margin-bottom: 25px;">
-                            <p style="color: #34495e; font-size: 16px; line-height: 1.6;">
-                                Hey <strong>${username}</strong>! 👋
-                            </p>
-                            <p style="color: #34495e; font-size: 16px; line-height: 1.6;">
-                                We're thrilled to have you on board! You've been granted access to the EmmiPay Admin Dashboard — 
-                                a powerful tool that puts you at the heart of our operations. Your skills and dedication are going to make a real difference here.
-                            </p>
-                        </div>
-
-                        <div style="background-color: #ecf0f1; padding: 20px; border-radius: 8px; margin-bottom: 25px;">
-                            <h3 style="color: #2c3e50; margin-bottom: 15px; font-size: 18px;">🔑 Your Login Credentials:</h3>
-                            ${dashboardLink}
-                            <div style="margin-bottom: 10px;">
-                                <strong style="color: #34495e;">Username:</strong> <span style="color: #2c3e50;">${username}</span>
-                            </div>
-                            <div style="margin-bottom: 10px;">
-                                <strong style="color: #34495e;">Email:</strong> <span style="color: #2c3e50;">${useremail}</span>
-                            </div>
-                            <div style="margin-bottom: 10px;">
-                                <strong style="color: #34495e;">Password:</strong> <span style="color: #e74c3c; font-family: monospace;">${newPassword}</span>
-                            </div>
-                        </div>
-
-                        <div style="background-color: #d4edda; border: 1px solid #c3e6cb; padding: 20px; border-radius: 8px; margin-bottom: 25px;">
-                            <h3 style="color: #155724; margin-bottom: 15px; font-size: 16px;">💪 You're Part of Something Big!</h3>
-                            <p style="color: #155724; margin: 0; line-height: 1.6;">
-                                At EmmiPay, we believe in empowering our team to do their best work. 
-                                Your contribution matters, and we're confident you'll excel in your role. 
-                                Let's build something amazing together!
-                            </p>
-                        </div>
-
-                        <div style="background-color: #fff3cd; border: 1px solid #ffeaa7; padding: 20px; border-radius: 8px; margin-bottom: 25px;">
-                            <h3 style="color: #856404; margin-bottom: 15px; font-size: 16px;">🔒 A Few Important Guidelines:</h3>
-                            <ul style="color: #856404; margin: 0; padding-left: 20px;">
-                                <li style="margin-bottom: 8px;"><strong>Keep it private:</strong> Your credentials are yours alone — never share them with anyone</li>
-                                <li style="margin-bottom: 8px;"><strong>Stay aware:</strong> All activities on the dashboard are monitored for everyone's safety</li>
-                                <li style="margin-bottom: 8px;"><strong>Use responsibly:</strong> Access is for authorized business operations only</li>
-                                <li style="margin-bottom: 8px;"><strong>Own your actions:</strong> Every action under your account reflects on you — make it count!</li>
-                                <li style="margin-bottom: 8px;"><strong>Protect data:</strong> Handle all information with care and follow our security standards</li>
-                                <li style="margin-bottom: 8px;"><strong>Speak up:</strong> Notice something unusual? Report it immediately — your vigilance keeps us safe</li>
-                            </ul>
-                        </div>
-
-                        <div style="background-color: #d1ecf1; border: 1px solid #bee5eb; padding: 20px; border-radius: 8px; margin-bottom: 25px;">
-                            <h3 style="color: #0c5460; margin-bottom: 15px; font-size: 16px;">🛡️ Quick Security Tip:</h3>
-                            <p style="color: #0c5460; margin: 0; line-height: 1.6;">
-                                We highly recommend changing your password right after your first login. 
-                                A strong password is your first line of defense!
-                            </p>
-                        </div>
-
-                        <div style="margin-bottom: 25px;">
-                            <p style="color: #34495e; font-size: 14px; line-height: 1.6;">
-                                <strong>FYI:</strong> Your access was set up by <strong>${creatorUser.username}</strong>. 
-                                If you have any questions about your role or access, feel free to reach out to them.
-                            </p>
-                        </div>
-
-                        <p style="font-size: 0.9rem; line-height: 1.5; margin: 20px 0 10px;">
-                            Got questions? We're always here to help — reach out anytime at 
-                            <a href="mailto:emmipayofficial@gmail.com" style="color: #3498db; text-decoration: none;">emmipayofficial@gmail.com</a>.
-                        </p>
-
-                        <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #ecf0f1; text-align: center;">
-                            <p style="color: #95a5a6; font-size: 12px; margin: 0;">
-                                Cheers,<br>
-                                <strong>The EmmiPay Team</strong>
-                            </p>
-                        </div>
-
+            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background-color: #f9f9f9;">
+                <div style="background-color: #ffffff; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
+                    
+                    <div style="text-align: center; margin-bottom: 30px;">
+                        <h1 style="color: #2c3e50; font-size: 28px; margin-bottom: 10px;">Welcome to the EmmiPay Family! 🎊</h1>
+                        <div style="width: 50px; height: 3px; background-color: #3498db; margin: 0 auto;"></div>
                     </div>
+
+                    <div style="margin-bottom: 25px;">
+                        <p style="color: #34495e; font-size: 16px; line-height: 1.6;">
+                            Hey <strong>${name.trim()}</strong>! 👋
+                        </p>
+                        <p style="color: #34495e; font-size: 16px; line-height: 1.6;">
+                            We're thrilled to have you on board! You've been granted access to the EmmiPay Admin Dashboard — 
+                            a powerful tool that puts you at the heart of our operations. Your skills and dedication are going to make a real difference here.
+                        </p>
+                    </div>
+
+                    <div style="background-color: #ecf0f1; padding: 20px; border-radius: 8px; margin-bottom: 25px;">
+                        <h3 style="color: #2c3e50; margin-bottom: 15px; font-size: 18px;">🔑 Your Login Credentials:</h3>
+                        ${dashboardLink}
+                        <div style="margin-bottom: 10px;">
+                            <strong style="color: #34495e;">Name:</strong> <span style="color: #2c3e50;">${name.trim()}</span>
+                        </div>
+                        <div style="margin-bottom: 10px;">
+                            <strong style="color: #34495e;">Username:</strong> <span style="color: #2c3e50;">${username}</span>
+                        </div>
+                        <div style="margin-bottom: 10px;">
+                            <strong style="color: #34495e;">Email:</strong> <span style="color: #2c3e50;">${useremail}</span>
+                        </div>
+                        <div style="margin-bottom: 10px;">
+                            <strong style="color: #34495e;">Password:</strong> <span style="color: #e74c3c; font-family: monospace;">${newPassword}</span>
+                        </div>
+                    </div>
+
+                    <div style="background-color: #d4edda; border: 1px solid #c3e6cb; padding: 20px; border-radius: 8px; margin-bottom: 25px;">
+                        <h3 style="color: #155724; margin-bottom: 15px; font-size: 16px;">💪 You're Part of Something Big!</h3>
+                        <p style="color: #155724; margin: 0; line-height: 1.6;">
+                            At EmmiPay, we believe in empowering our team to do their best work. 
+                            Your contribution matters, and we're confident you'll excel in your role. 
+                            Let's build something amazing together!
+                        </p>
+                    </div>
+
+                    <div style="background-color: #fff3cd; border: 1px solid #ffeaa7; padding: 20px; border-radius: 8px; margin-bottom: 25px;">
+                        <h3 style="color: #856404; margin-bottom: 15px; font-size: 16px;">🔒 A Few Important Guidelines:</h3>
+                        <ul style="color: #856404; margin: 0; padding-left: 20px;">
+                            <li style="margin-bottom: 8px;"><strong>Keep it private:</strong> Your credentials are yours alone — never share them with anyone</li>
+                            <li style="margin-bottom: 8px;"><strong>Stay aware:</strong> All activities on the dashboard are monitored for everyone's safety</li>
+                            <li style="margin-bottom: 8px;"><strong>Use responsibly:</strong> Access is for authorized business operations only</li>
+                            <li style="margin-bottom: 8px;"><strong>Own your actions:</strong> Every action under your account reflects on you — make it count!</li>
+                            <li style="margin-bottom: 8px;"><strong>Protect data:</strong> Handle all information with care and follow our security standards</li>
+                            <li style="margin-bottom: 8px;"><strong>Speak up:</strong> Notice something unusual? Report it immediately — your vigilance keeps us safe</li>
+                        </ul>
+                    </div>
+
+                    <div style="background-color: #d1ecf1; border: 1px solid #bee5eb; padding: 20px; border-radius: 8px; margin-bottom: 25px;">
+                        <h3 style="color: #0c5460; margin-bottom: 15px; font-size: 16px;">🛡️ Quick Security Tip:</h3>
+                        <p style="color: #0c5460; margin: 0; line-height: 1.6;">
+                            We highly recommend changing your password right after your first login. 
+                            You can also update your username from your profile settings.
+                        </p>
+                    </div>
+
+                    <div style="margin-bottom: 25px;">
+                        <p style="color: #34495e; font-size: 14px; line-height: 1.6;">
+                            <strong>FYI:</strong> Your access was set up by <strong>${creatorUser.name}</strong>. 
+                            If you have any questions about your role or access, feel free to reach out to them.
+                        </p>
+                    </div>
+
+                    <p style="font-size: 0.9rem; line-height: 1.5; margin: 20px 0 10px;">
+                        Got questions? We're always here to help — reach out anytime at 
+                        <a href="mailto:emmipayofficial@gmail.com" style="color: #3498db; text-decoration: none;">emmipayofficial@gmail.com</a>.
+                    </p>
+
+                    <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #ecf0f1; text-align: center;">
+                        <p style="color: #95a5a6; font-size: 12px; margin: 0;">
+                            Cheers,<br>
+                            <strong>The EmmiPay Team</strong>
+                        </p>
+                    </div>
+
                 </div>
+            </div>
             `
             };
 
@@ -545,7 +573,10 @@ const AdminUserController = {
                     return res.status(500).json({ message: 'User created but error sending email' });
                 } else {
                     console.log("Credentials email sent successfully for the new admin user.");
-                    return res.status(200).json({ message: 'User added successfully and credentials sent via email' });
+                    return res.status(200).json({
+                        message: 'User added successfully and credentials sent via email',
+                        data: { name: name.trim(), username, useremail, role }
+                    });
                 }
             });
 
@@ -559,12 +590,12 @@ const AdminUserController = {
         const targetUserId = req.params.id;
 
         try {
-            const { username, role, permissions } = req.body;
+            const { name, username, role, permissions } = req.body;
 
-            if (!username || !role) {
+            if (!name || !username || !role) {
                 return res.status(400).json({
                     success: false,
-                    message: 'Username and role are required'
+                    message: 'Name, username and role are required'
                 });
             }
 
@@ -605,9 +636,12 @@ const AdminUserController = {
                 }
             }
 
+            const oldName = userToUpdate.name;
+            const oldUsername = userToUpdate.username;
             const oldRole = userToUpdate.role;
             const oldPermissions = { ...userToUpdate.permissions };
 
+            userToUpdate.name = name.trim();
             userToUpdate.username = username;
             userToUpdate.role = role;
             userToUpdate.permissions = {
@@ -618,6 +652,14 @@ const AdminUserController = {
             await userToUpdate.save();
 
             const changes = [];
+
+            if (oldName !== name.trim()) {
+                changes.push(`Changed name from '${oldName}' to '${name.trim()}'`);
+            }
+
+            if (oldUsername !== username) {
+                changes.push(`Changed username from '${oldUsername}' to '${username}'`);
+            }
 
             if (oldRole !== role) {
                 const roleNames = {
@@ -652,6 +694,7 @@ const AdminUserController = {
                 success: true,
                 message: 'User updated successfully',
                 data: {
+                    name: userToUpdate.name,
                     username: userToUpdate.username,
                     useremail: userToUpdate.useremail,
                     role: userToUpdate.role,
@@ -706,7 +749,7 @@ const AdminUserController = {
             }
 
             const deletedUserInfo = {
-                username: userToDelete.username,
+                name: userToDelete.name,
                 useremail: userToDelete.useremail,
                 role: userToDelete.role,
                 accessAssigned: userToDelete.accessAssigned
@@ -719,7 +762,7 @@ const AdminUserController = {
             await logAdminActivity({
                 userId,
                 taskType: "Admin User Deletion",
-                taskDescription: `Admin user '${deletedUserInfo.username}' (Email: ${deletedUserInfo.useremail}, Role: ${deletedUserInfo.role}) was deleted by '${requestingUser.username}'.`
+                taskDescription: `Admin user '${deletedUserInfo.name}' (Email: ${deletedUserInfo.useremail}, Role: ${deletedUserInfo.role}) was deleted by '${requestingUser.username}'.`
             });
 
             return res.status(200).json({
@@ -740,7 +783,6 @@ const AdminUserController = {
         try {
             const userId = req.user.id;
 
-            // Check if requesting user exists
             const requestingUser = await AdminUser.findById(userId);
             if (!requestingUser) {
                 return res.status(404).json({
@@ -749,7 +791,6 @@ const AdminUserController = {
                 });
             }
 
-            // Only admin can view others
             if (requestingUser.role !== 'admin') {
                 return res.status(403).json({
                     success: false,
@@ -757,34 +798,17 @@ const AdminUserController = {
                 });
             }
 
-            // Fetch all admin users except current
             let users = await AdminUser.find({ _id: { $ne: userId } })
                 .select('-password')
                 .sort({ createdAt: -1 });
 
-            // Step 1: Define access level rank
-            const getAccessRank = (user) => {
-                const access = user.accessAssigned || [];
-                const hasAdmin = access.includes('admin');
-                const hasAudit = access.includes('audit');
-
-                if (hasAdmin && hasAudit) return 1; // both admin & audit
-                if (hasAdmin) return 2;             // only admin
-                if (hasAudit) return 3;             // only audit
-                return 4;                           // no access (rare)
-            };
-
-            // Step 2: Define role rank
             const getRoleRank = (role) => {
                 if (role === 'admin') return 1;
                 if (role === 'admin-users') return 2;
                 return 3;
             };
 
-            // Step 3: Sort based on access first, then role
             users = users.sort((a, b) => {
-                const accessDiff = getAccessRank(a) - getAccessRank(b);
-                if (accessDiff !== 0) return accessDiff;
                 return getRoleRank(a.role) - getRoleRank(b.role);
             });
 
@@ -805,36 +829,29 @@ const AdminUserController = {
         try {
             const userId = req.user.id;
 
-            const currentUser = await AdminUser.findById(userId, 'username role');
+            const currentUser = await AdminUser.findById(userId, 'name role');
             if (!currentUser) {
                 return res.status(404).json({ success: false, message: "User not found" });
             }
 
             const isAdmin = currentUser.role === 'admin';
 
-            // ---- Admin Users List ----
-            // Admin → all users, Non-admin → only themselves
             let adminUsers = [];
+
+            // ⭐ Only fetch all users if admin
             if (isAdmin) {
-                const allUsers = await AdminUser.find({}, 'username _id').sort({ username: 1 });
+                const allUsers = await AdminUser.find({}, 'name _id').sort({ name: 1 });
                 adminUsers = allUsers.map(user => ({
                     userId: user._id,
-                    username: user.username
+                    name: user.name
                 }));
-            } else {
-                adminUsers = [{
-                    userId: currentUser._id,
-                    username: currentUser.username
-                }];
             }
+            // ⭐ If not admin, adminUsers stays empty - no dropdown needed
 
-            // ---- Task Types ----
-            // Admin → all task types from all users
-            // Non-admin → only their task types
             let taskTypePipeline = [];
 
             if (!isAdmin) {
-                taskTypePipeline.push({ $match: { userId: userId } });
+                taskTypePipeline.push({ $match: { userId: userId.toString() } });
             }
 
             taskTypePipeline.push(
@@ -854,11 +871,11 @@ const AdminUserController = {
             return res.status(200).json({
                 success: true,
                 data: {
-                    adminUsers,
+                    adminUsers,  // ⭐ Empty array if not admin
                     taskTypes: uniqueTaskTypes,
                     currentUser: {
                         userId: userId,
-                        username: currentUser.username,
+                        name: currentUser.name,
                         isAdmin: isAdmin
                     }
                 }
@@ -878,7 +895,7 @@ const AdminUserController = {
         try {
             const userId = req.user.id;
 
-            const currentUser = await AdminUser.findById(userId, 'username role');
+            const currentUser = await AdminUser.findById(userId, 'name username role');
             if (!currentUser) {
                 return res.status(404).json({ success: false, message: "Admin user not found" });
             }
@@ -886,10 +903,8 @@ const AdminUserController = {
             const isAdmin = currentUser.role === 'admin';
             const { startDate, endDate, filterUserId, taskType } = req.query;
 
-            // Build query
             let query = {};
 
-            // ---- User Filter ----
             if (isAdmin) {
                 if (filterUserId && filterUserId !== 'all') {
                     query.userId = filterUserId;
@@ -898,7 +913,6 @@ const AdminUserController = {
                 query.userId = userId;
             }
 
-            // ---- Date Filter ----
             if (startDate && endDate) {
                 query.date = { $gte: startDate, $lte: endDate };
             } else if (startDate) {
@@ -907,13 +921,11 @@ const AdminUserController = {
                 query.date = { $lte: endDate };
             }
 
-            // Fetch logs
             let logs = await UserLog.find(query)
                 .sort({ date: -1 })
                 .limit(100)
                 .lean();
 
-            // ---- Task Type Filter ----
             if (taskType && taskType !== '' && taskType !== 'all') {
                 logs = logs
                     .map((doc) => ({
@@ -928,7 +940,11 @@ const AdminUserController = {
                 message: "User activities fetched successfully",
                 data: logs,
                 count: logs.length,
-                adminType: isAdmin ? 'admin' : 'regular'
+                currentUser: {
+                    name: currentUser.name,
+                    username: currentUser.username,
+                    isAdmin: isAdmin
+                }
             });
 
         } catch (error) {
@@ -944,7 +960,7 @@ const AdminUserController = {
     // Admin Users
     getAdminUsers: async (req, res) => {
         try {
-            const adminUsers = await AdminUser.find({}, { _id: 1, username: 1 });
+            const adminUsers = await AdminUser.find({}, { _id: 1, name: 1 }).sort({ name: 1 });
 
             return res.json({
                 success: true,
@@ -1031,6 +1047,156 @@ const AdminUserController = {
             return res.status(500).json({
                 success: false,
                 message: "Error updating profile image"
+            });
+        }
+    },
+    checkUsernameAvailability: async (req, res) => {
+        try {
+            const userId = req.user.id;
+            const { username } = req.query;
+
+            if (!username || username.trim().length < 3) {
+                return res.status(400).json({
+                    success: false,
+                    available: false,
+                    message: "Username must be at least 3 characters"
+                });
+            }
+
+            const cleanUsername = username.trim().toLowerCase();
+
+            // Check invalid characters
+            const usernameRegex = /^[a-z0-9._-]+$/;
+            if (!usernameRegex.test(cleanUsername)) {
+                return res.status(400).json({
+                    success: false,
+                    available: false,
+                    message: "Only lowercase letters, numbers, dots, hyphens and underscores allowed"
+                });
+            }
+
+            // Check if taken by another user
+            const existingUser = await AdminUser.findOne({
+                username: cleanUsername,
+                _id: { $ne: userId }
+            });
+
+            if (existingUser) {
+                return res.status(200).json({
+                    success: true,
+                    available: false,
+                    message: "Username already taken"
+                });
+            }
+
+            return res.status(200).json({
+                success: true,
+                available: true,
+                message: "Username is available"
+            });
+
+        } catch (error) {
+            console.error("Check username error:", error);
+            return res.status(500).json({
+                success: false,
+                available: false,
+                message: "Error checking username"
+            });
+        }
+    },
+    editProfileUsername: async (req, res) => {
+        try {
+            const userId = req.user.id;
+            const { username } = req.body;
+
+            // Validation
+            if (!username || username.trim().length < 3) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Username must be at least 3 characters"
+                });
+            }
+
+            const cleanUsername = username.trim().toLowerCase();
+            const usernameRegex = /^[a-z0-9._-]+$/;
+
+            if (!usernameRegex.test(cleanUsername)) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Only lowercase letters, numbers, dots, hyphens and underscores allowed"
+                });
+            }
+
+            // Check if username taken by another user
+            const existingUser = await AdminUser.findOne({
+                username: cleanUsername,
+                _id: { $ne: userId }
+            });
+
+            if (existingUser) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Username already taken"
+                });
+            }
+
+            // Get current user
+            const currentUser = await AdminUser.findById(userId);
+            if (!currentUser) {
+                return res.status(404).json({
+                    success: false,
+                    message: "User not found"
+                });
+            }
+
+            const oldUsername = currentUser.username;
+
+            // No change
+            if (oldUsername === cleanUsername) {
+                return res.status(200).json({
+                    success: true,
+                    message: "No changes made",
+                    data: {
+                        username: currentUser.username,
+                        useremail: currentUser.useremail,
+                        img: currentUser.img
+                    }
+                });
+            }
+
+            // Update username
+            currentUser.username = cleanUsername;
+            await currentUser.save();
+
+            // Update username in all UserLog documents
+            await UserLog.updateMany(
+                { userId: userId.toString() },
+                { $set: { userName: cleanUsername } }
+            );
+
+            // Log activity
+            await logAdminActivity({
+                userId,
+                taskType: "Profile Update",
+                taskDescription: `'${cleanUsername}' updated their username from '${oldUsername}' to '${cleanUsername}'.`
+            });
+
+            // ⭐ Return success WITHOUT new token - no logout needed
+            return res.status(200).json({
+                success: true,
+                message: "Username updated successfully",
+                data: {
+                    username: currentUser.username,
+                    useremail: currentUser.useremail,
+                    img: currentUser.img
+                }
+            });
+
+        } catch (error) {
+            console.error("Edit username error:", error);
+            return res.status(500).json({
+                success: false,
+                message: "Error updating username"
             });
         }
     },

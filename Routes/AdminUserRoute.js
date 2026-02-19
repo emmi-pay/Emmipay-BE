@@ -30,6 +30,8 @@ AdminUserRoutes.get('/get/admin-users', admin_middleware, AdminUserController.ge
 // Profile
 AdminUserRoutes.get('/profile', admin_middleware, AdminUserController.getProfile);
 AdminUserRoutes.put('/edit-profile/img', admin_middleware, upload.single('img'), AdminUserController.editProfileImg);
+AdminUserRoutes.put('/edit-profile/username', admin_middleware, AdminUserController.editProfileUsername);
+AdminUserRoutes.get('/check-username', admin_middleware, AdminUserController.checkUsernameAvailability);
 
 
 module.exports = AdminUserRoutes;
