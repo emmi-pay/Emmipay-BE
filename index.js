@@ -6,10 +6,13 @@ const xss = require('xss-clean');
 const { PORT, MONGODB_URI } = require('./utilities/config');
 const passport = require('passport');
 const http = require('http');
+const https = require('https');  // ← ADD THIS
+
 
 const AdminUserRoutes = require('./Routes/AdminUserRoute');
+const OnboardVerificationRouter = require('./Routes/OnboardVerificationRouter');
 // const AdminKYCRoutes = require('./Routes/AdminKYCRoutes');
-
+const httpsAgent = new https.Agent({ rejectUnauthorized: false });
 const app = express();
 const server = http.createServer(app);
 
@@ -23,7 +26,7 @@ app.use(express.urlencoded({ extended: true, limit: '250mb' }));
 app.use(xss());
 
 app.use('/adminuser', AdminUserRoutes);
-// app.use('/adminkyc', AdminKYCRoutes);
+app.use('/onboard', OnboardVerificationRouter);
 
 app.get('/ip', (req, res) => {
     const ipAddress = req.ip;
